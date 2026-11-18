@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="panxy1019 的《AI 系统性能工程》第五章原创中文伴读：GPU 存储 I/O、GDS、3FS、PyTorch 数据流水线与端到端性能诊断，附交互演示和自测。">
+  <meta name="theme-color" content="#087f68">
+  <title>GPU 存储 I/O 优化 · panxy1019 的 AI 系统笔记</title>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <script>try{if((localStorage.getItem('panxy-theme')|| (matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light'))==='dark')document.documentElement.dataset.theme='dark'}catch{}</script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+  <svg class="icon-defs" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <defs>
+      <symbol id="i-book" viewBox="0 0 24 24"><path d="M3 4h6l3 3 3-3h6v15h-6l-3 2-3-2H3zM12 7v14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+      <symbol id="i-github" viewBox="0 0 24 24"><path d="M9 19c-4 1-4-2-5-2m10 5v-3.9c0-1.1-.4-1.9-1-2.3 3.3-.4 6.8-1.6 6.8-7.3 0-1.6-.6-2.9-1.5-3.9.2-.4.7-1.9-.2-3.8 0 0-1.2-.4-4.1 1.5a14 14 0 0 0-7.4 0C3.7.4 2.5.8 2.5.8c-.9 1.9-.4 3.4-.2 3.8C1.4 5.6.8 6.9.8 8.5c0 5.7 3.5 6.9 6.8 7.3-.5.4-.9 1.1-1 2.1V22" transform="translate(1.3 0) scale(.93)"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5"/></symbol>
+      <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+      <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V3H3v13h5"/></symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+      <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+      <symbol id="i-chip" viewBox="0 0 24 24"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 1v4m6-4v4M9 19v4m6-4v4M1 9h4m-4 6h4m14-6h4m-4 6h4M9 9h6v6H9z"/></symbol>
+      <symbol id="i-disk" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/></symbol>
+      <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 3h7v7m0-7L10 14M10 3H3v18h18v-7"/></symbol>
+    </defs>
+  </svg>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button class="icon-button menu-button" id="menu-toggle" aria-label="打开章节导航" aria-controls="sidebar" aria-expanded="false"><svg class="icon"><use href="#i-menu"/></svg></button>
+      <a class="brand" href="#top" aria-label="panxy1019 的 AI 系统笔记首页"><span class="brand-mark"><svg class="icon"><use href="#i-book"/></svg></span><span><strong>panxy1019<span class="brand-dot">.</span></strong><span class="brand-subtitle">AI SYSTEMS NOTES</span></span></a>
+      <button class="search-trigger" id="search-open"><svg class="icon"><use href="#i-search"/></svg><span>搜索本章内容…</span><kbd>Ctrl K</kbd></button>
+      <div class="header-actions"><a class="github-link" href="https://github.com/panxy1019/ai-systems-notes" target="_blank" rel="noopener noreferrer"><svg class="icon"><use href="#i-github"/></svg><span>GitHub</span><svg class="icon small"><use href="#i-external"/></svg></a><span class="header-divider"></span><button class="icon-button" id="theme-toggle" aria-label="切换深色模式" aria-pressed="false"><svg class="icon"><use href="#i-sun"/></svg></button></div>
+    </div>
+  </header>
+  <div class="reading-progress" aria-hidden="true"><span id="reading-progress"></span></div>
+  <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+
+  <div class="page-shell" id="top">
+    <aside class="sidebar" id="sidebar" aria-label="章节导航">
+      <div class="library-label">我的技术书架 <span>01</span></div>
+      <a class="book-selector" href="#overview"><span class="book-cover">AI<br><small>系统性能工程</small></span><span><strong>AI 系统性能工程</strong><small>Chris Fregly · 中文伴读</small></span></a>
+      <div class="sidebar-chapter"><span class="chapter-number">05</span><span>GPU 存储 I/O 优化</span></div>
+      <nav class="chapter-nav">
+        <a class="nav-link active" href="#overview"><svg class="icon"><use href="#i-book"/></svg>本章概要</a>
+        <div class="nav-group-title">章节详解</div>
+        <a class="nav-link" href="#storage"><span class="nav-num">01</span>存储带宽与数据局部性</a>
+        <a class="nav-link" href="#access"><span class="nav-num">02</span>顺序读、随机读与分片</a>
+        <a class="nav-link" href="#gds"><span class="nav-num">03</span>GDS：缩短数据路径</a>
+        <a class="nav-link" href="#threefs"><span class="nav-num">04</span>理解 DeepSeek 3FS</a>
+        <a class="nav-link" href="#architecture"><span class="nav-num">05</span>存储架构与压缩取舍</a>
+        <a class="nav-link" href="#monitor"><span class="nav-num">06</span>监控与定位 I/O</a>
+        <a class="nav-link" href="#pipeline"><span class="nav-num">07</span>数据加载与流水线重叠</a>
+        <a class="nav-link" href="#tools"><span class="nav-num">08</span>DALI 与 NeMo Curator</a>
+        <a class="nav-link" href="#profiling"><span class="nav-num">09</span>持续剖析与瓶颈诊断</a>
+        <div class="nav-group-title">复习与实践</div>
+        <a class="nav-link" href="#takeaways"><svg class="icon"><use href="#i-check"/></svg>核心要点</a>
+        <a class="nav-link" href="#quiz"><span class="nav-quiz">?</span>六道题，检查理解</a>
+        <a class="nav-link" href="#faq"><span class="nav-quiz">↳</span>FAQ 与术语</a>
+        <a class="nav-link" href="#references"><svg class="icon"><use href="#i-external"/></svg>阅读来源与勘误</a>
+      </nav>
+      <div class="sidebar-note"><span class="status-dot"></span>持续生长的个人知识库<small>理解原理，然后回到真实负载。</small></div>
+    </aside>
+
+    <main id="main" class="article" tabindex="-1">
+      <div class="breadcrumb">技术书架 <span>/</span> AI 系统性能工程 <span>/</span> <strong>第五章</strong></div>
+      <div class="chapter-eyebrow"><span class="pill">CHAPTER 05</span><span>从存储到计算</span></div>
+      <h1>GPU 存储 I/O 优化</h1>
+      <p class="article-deck">让数据跟上算力，<br class="mobile-break">让 GPU 少一点等待。</p>
+      <p class="article-intro">GPU 再快，也算不了还没送到的数据。这一章从数据存在哪里开始，一路走到如何加载、传输与计算，并学会用时间线找到真正的瓶颈。</p>
+      <div class="article-meta"><span class="author-avatar">P</span><span>panxy1019</span><span class="meta-dot">·</span><span><svg class="icon small"><use href="#i-clock"/></svg>约 30 分钟</span><span class="meta-dot">·</span><span>原书 pp. 121–139</span></div>
+      <nav class="article-tabs" aria-label="阅读分区"><a class="selected" href="#overview">本章概要</a><a href="#storage">章节详解</a><a href="#takeaways">核心要点</a><a href="#faq">FAQ</a></nav>
+
+      <section id="overview" class="section-block" data-title="本章概要">
+        <div class="section-kicker">THE BIG PICTURE</div>
+        <h2>先看整条供给线</h2>
+        <p>把训练想成一间工厂：GPU 是加工机器，存储是仓库，CPU 负责拆包与整理，H2D 则把原料送上机器。<strong>持续产出由整条线的最慢环节决定。</strong>优化单块 SSD 或某个 kernel，都要回到每秒完成多少真实训练样本来评价。</p>
+        <figure class="supply-figure" aria-labelledby="supply-caption">
+          <div class="figure-topline"><span><i class="status-dot"></i> 一批数据的旅程</span><span>DATA → COMPUTE</span></div>
+          <div class="supply-flow">
+            <div class="supply-node"><span class="node-icon"><svg class="icon"><use href="#i-disk"/></svg></span><small>01 / READ</small><strong>存储读取</strong><span>NVMe · 共享存储 · 对象存储</span></div><span class="flow-arrow">→</span>
+            <div class="supply-node"><span class="node-icon">{ }</span><small>02 / PREPARE</small><strong>解码与预处理</strong><span>CPU workers · 数据变换</span></div><span class="flow-arrow">→</span>
+            <div class="supply-node"><span class="node-icon">⇄</span><small>03 / TRANSFER</small><strong>主机 → 显存</strong><span>H2D · 锁页内存</span></div><span class="flow-arrow">→</span>
+            <div class="supply-node node-gpu"><span class="node-icon"><svg class="icon"><use href="#i-chip"/></svg></span><small>04 / COMPUTE</small><strong>GPU 计算</strong><span>前向 · 反向 · 更新</span></div>
+          </div>
+          <figcaption id="supply-caption">先让每一环供得上，再让不同批次的阶段重叠。GDS 可改变其中的数据传输路径。</figcaption>
+        </figure>
+        <div class="learning-goals"><div><span>01</span><p><strong>算得清需求</strong>从每卡消费速率估算集群带宽。</p></div><div><span>02</span><p><strong>解释数据路径</strong>分清分片、缓存、GDS 与预取。</p></div><div><span>03</span><p><strong>用证据调优</strong>把 GPU 空闲对应到具体阶段。</p></div></div>
+        <div class="callout"><span class="callout-icon">↗</span><div><strong>带着一个问题读</strong><p>GPU 等数据时，究竟是“读不出来”“处理不完”，还是“传不过去”？三种问题，对应三组实验。</p></div></div>
+      </section>
+
+      <div class="part-heading" id="details"><span>01—09</span><h2>章节详解</h2><p>沿着数据的路径，一层一层排查。</p></div>
+
+      <section id="storage" class="section-block" data-title="存储带宽与数据局部性">
+        <div class="section-source">01 <span>原书 §5.1 · pp. 121–122</span></div>
+        <h2>存储有多快，要看所有 GPU 的总需求</h2>
+        <p>单卡只需要 200 MB/s，不代表 8 卡作业也只需要 200 MB/s。每张卡同时消费数据，需求会叠加到共享存储和网络上。规划时还应留出突发、元数据请求和其他作业的余量。</p>
+        <div class="equation"><span>规划存储吞吐</span><strong>GPU 数 × 每卡读取速率 × 余量系数</strong></div>
+        <div class="interactive-panel bandwidth-panel">
+          <div class="panel-heading"><div><span class="interactive-tag">动手算一算</span><h3>你的 GPU，需要多大的“进货口”？</h3></div><span class="model-label">教学估算</span></div>
+          <div class="budget-controls"><label>GPU 数量<input id="gpu-count" type="number" min="1" max="100000" step="1" value="8" required></label><label>每卡读取速率 <span>MB/s</span><input id="gpu-rate" type="number" min="1" max="1000000" step="1" value="200" required></label><label>余量系数<select id="headroom"><option value="1.25">1.25 ×</option><option value="1.5" selected>1.5 ×</option><option value="2">2 ×</option></select></label></div>
+          <div class="budget-results" aria-live="polite"><div><small>原始聚合需求</small><strong><output id="raw-bandwidth">1.60</output> <span>GB/s</span></strong></div><span class="result-arrow">→</span><div class="target-result"><small>建议规划目标</small><strong><output id="target-bandwidth">2.40</output> <span>GB/s</span></strong></div></div>
+          <p class="panel-footnote" id="budget-note">十进制单位：1 GB = 1,000 MB。这里算存储读取；解码后的 H2D 流量需要另算。</p>
+        </div>
+        <h3>让数据靠近计算</h3>
+        <p>本地 NVMe、同机架存储或本地缓存，可以减少远程链路上的竞争。按节点分片还能减少重复读取。<code>DistributedSampler</code> 负责分配样本索引，<strong>不会自动把远程文件搬到本地</strong>；物理暂存与逻辑采样要分别设计。</p>
+        <p class="measure-note"><strong>怎么验证：</strong>把全体训练进程的实测读取量相加，对照共享存储和网络的持续吞吐。单盘标称速度、缓存命中的短时成绩，都不能代替这一结果。</p>
+      </section>
+
+      <section id="access" class="section-block" data-title="顺序读、随机读与分片">
+        <div class="section-source">02 <span>原书 §5.2、§5.2.1 · pp. 122–123</span></div>
+        <h2>小文件的成本，常常比文件本身还大</h2>
+        <p>读一张小图，除了搬数据，还要打开文件、查元数据、提交 I/O。数百万次小读会不断支付这笔固定成本。SSD 没有机械寻道，仍然会受请求率、延迟和元数据服务限制。</p>
+        <div class="comparison-grid"><div><small>大量独立样本</small><div class="file-squares" aria-hidden="true">▤ ▤ ▤ ▤ ▤ ▤ ▤ ▤ ▤ ▤ ▤ ▤</div><strong>小请求多，固定开销反复付</strong><p>瓶颈可能先出现在 IOPS 或元数据。</p></div><div class="comparison-good"><small>按 shard 组织样本</small><div class="shard-bars" aria-hidden="true"><span>shard-001.tar</span><span>shard-002.tar</span></div><strong>成块读取，再在内存里打乱</strong><p>如 WebDataset tar；格式要匹配访问模式。</p></div></div>
+        <p>顺序读和训练随机性可以兼容：先打乱 shard 顺序，再在有界缓冲区内打乱样本。这个方案并不等于全数据集的均匀随机排列；需要按训练要求选择打乱策略。Arrow、Parquet、TFRecord 等格式也要结合索引、行组和数据类型评估。</p>
+        <h3>NVMe 的四个检查点</h3>
+        <ul class="prose-list"><li><strong>PCIe 链路：</strong>通道数与实际协商速率是否限制设备。</li><li><strong>队列深度：</strong>请求太少会吃不满并行通道；过多则可能抬高尾延迟。</li><li><strong>预读与页缓存：</strong>顺序扫描常有收益；低命中率随机读要重新测量。</li><li><strong>调度器与并发：</strong>从系统默认值出发，对目标负载测试；必须随机时可评估并发读与 <code>io_uring</code>。</li></ul>
+        <p class="measure-note"><strong>怎么验证：</strong>固定样本数量与训练步骤，对比“小文件”和“分片”的 steps/s、读带宽、请求率、CPU 开销。只增大块大小，不一定能修复解码瓶颈。</p>
+      </section>
+
+      <section id="gds" class="section-block" data-title="GDS：缩短数据路径">
+        <div class="section-source">03 <span>原书 §5.3–§5.3.2 · pp. 124–127</span></div>
+        <h2>GDS 减少的是主机内存中转</h2>
+        <p>传统路径通常先把数据送入主机内存，再复制到显存。GPUDirect Storage（GDS）在受支持的配置中，让存储数据更直接地进入 GPU 内存，减少 bounce buffer 和 CPU 数据搬运。<strong>CPU 仍然负责控制和编排。</strong></p>
+        <div class="interactive-panel path-panel">
+          <div class="panel-heading"><h3>同一批数据，两条传输路径</h3><div class="segmented" role="group" aria-label="选择数据路径"><button id="path-standard" class="selected" aria-pressed="true" data-path="standard">传统路径</button><button id="path-gds" aria-pressed="false" data-path="gds">GDS 路径</button></div></div>
+          <div class="path-diagram" id="path-diagram" aria-live="polite"><div class="path-node"><svg class="icon"><use href="#i-disk"/></svg><strong>存储 / 网卡</strong><small>NVMe / 受支持存储栈</small></div><div class="path-link"><span>DMA</span>→</div><div class="path-node host-node" id="host-node"><span class="path-host-icon">CPU</span><strong>主机内存中转</strong><small>额外缓冲与数据搬运</small></div><div class="path-link"><span id="path-transfer">H2D</span>→</div><div class="path-node gpu-path-node"><svg class="icon"><use href="#i-chip"/></svg><strong>GPU 显存</strong><small>HBM</small></div></div>
+          <p class="path-explanation" id="path-explanation">数据经过主机内存再进入显存，CPU 侧的内存带宽和搬运开销可能限制吞吐。</p>
+          <div class="path-control-plane">控制面始终存在：CPU 提交 I/O、管理依赖与缓冲区。</div>
+        </div>
+        <p>使用 GDS 要核对 GPU、驱动、文件系统、拓扑和 <code>cuFile</code> API。应用仍走普通读取再 <code>.to("cuda")</code>，不会因为装了 GDS 就自动换通路。兼容模式也可能引入中转，需要验证实际路径。<a href="https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html" target="_blank" rel="noopener noreferrer">NVIDIA GDS 概览 ↗</a></p>
+        <details class="expandable"><summary>§5.3.1：CUDA 进程检查点，为什么单独讲？</summary><div><p><code>cuda-checkpoint</code> 配合 CRIU 保存进程运行状态：先等待 GPU 工作完成，将显存状态搬到主机内存，再由 CPU 侧工具保存进程镜像。它与框架的 <code>state_dict</code>、用重算换内存的 activation checkpointing 是三件事。不要把这条路径画成 GDS 直接把进程显存快照写入磁盘。</p><p>估算暂停时间时，显存镜像大小 ÷ 实际主机链路带宽只是传输下限；还需计入排空任务等成本。</p></div></details>
+        <details class="expandable"><summary>§5.3.2：如何用 gdsio 做公平的对照？</summary><div><p>固定文件、GPU、请求大小、并发数和读取模式，只换传输路径。<code>-x 2</code> 是存储 → CPU → GPU，<code>-x 0</code> 是 GDS，两组终点都要到 GPU。确认目标文件已准备好，先核对本机版本的 <code>gdsio -h</code>。</p><div class="code-block"><div class="code-heading"><span>Shell · 只读基准示意</span><button class="copy-button" data-copy="gds-code" aria-label="复制 gdsio 示例"><svg class="icon small"><use href="#i-copy"/></svg>复制</button></div><pre><code id="gds-code"># 同一份已存在的测试文件；-I 0 为读取
+/usr/local/cuda/gds/tools/gdsio -f /mnt/data/test.bin -d 0 -w 4 -s 10G -i 1M -I 0 -x 2
+/usr/local/cuda/gds/tools/gdsio -f /mnt/data/test.bin -d 0 -w 4 -s 10G -i 1M -I 0 -x 0</code></pre></div><p>记录吞吐、延迟与 CPU 占用，标明缓存状态和测试时长。书内表 5-1 的 8.0 → 9.6 GB/s 是书中示例，不是本站实测，也不是通用的 20% 提速承诺。参数语义见 <a href="https://docs.nvidia.com/gpudirect-storage/configuration-guide/benchmarking-gpudirect-storage.html" target="_blank" rel="noopener noreferrer">NVIDIA 基准文档</a>。</p></div></details>
+      </section>
+
+      <section id="threefs" class="section-block" data-title="理解 DeepSeek 3FS">
+        <div class="section-source">04 <span>原书 §5.4 · pp. 127–129</span></div>
+        <h2>3FS：当存储本身也需要横向扩展</h2>
+        <p>DeepSeek 的 Fire-Flyer File System（3FS）把多台存储节点的 SSD 和 RDMA 网络组织成共享存储层。它针对 AI 训练、推理等高吞吐场景设计，也重视大规模随机访问。</p>
+        <div class="architecture-diagram"><div class="arch-clients">训练 / 推理客户端</div><div class="arch-line">↓ 文件接口与 I/O 请求</div><div class="arch-services"><span><strong>集群管理</strong><small>成员与配置</small></span><span><strong>元数据服务</strong><small>文件与目录信息</small></span><span><strong>存储服务</strong><small>分布式 SSD 数据</small></span></div><div class="arch-caption">概念示意 · 对应原书图 5-2，不表示每次请求都依次经过三个服务。</div></div>
+        <p>这里要分清层次：3FS 是分布式文件系统，RDMA 是传输机制，GDS 是存储到 GPU 的数据路径能力。支持 RDMA 或直接 I/O，<strong>不能单独证明数据已经直达显存</strong>。</p>
+        <div class="callout correction"><span class="callout-icon">i</span><div><strong>阅读校正：保留基准测试的完整上下文</strong><p>3FS 官方报告约 6.6 TiB/s 聚合读取：180 个存储节点，每节点 2×200 Gbps InfiniBand、16×14 TiB NVMe，并有 500 多个客户端。书稿 p.128 的“68 节点、双 100 Gbps、6.6 TB/s”组合不一致，本站采用官方口径。<a href="https://github.com/deepseek-ai/3FS#performance" target="_blank" rel="noopener noreferrer">查看原始测试配置 ↗</a></p></div></div>
+        <p class="measure-note"><strong>带走的思想：</strong>先选择适合负载的现成系统，量出单节点热点与集群聚合上限。自研文件系统是一项长期工程，不能从一个吞吐数字推导它适合所有集群。</p>
+      </section>
+
+      <section id="architecture" class="section-block" data-title="存储架构与压缩取舍">
+        <div class="section-source">05 <span>原书 §5.5–§5.6 · pp. 129–130</span></div>
+        <h2>缓存、条带、复制、压缩，分别在换什么？</h2>
+        <div class="table-wrap"><table><caption>先按访问模式选架构，再调参数</caption><thead><tr><th>方案</th><th>解决什么</th><th>需要付出的代价</th></tr></thead><tbody><tr><td>本地 NVMe / 暂存</td><td>把远端延迟移出训练关键路径</td><td>启动时拷贝、容量与副本管理</td></tr><tr><td>单共享服务器</td><td>简单共享同一份数据</td><td>多节点争用同一出口</td></tr><tr><td>并行文件系统</td><td>多服务并发供数、条带聚合带宽</td><td>部署调优、元数据与热点治理</td></tr><tr><td>对象存储 + 缓存 / 流式读</td><td>大数据集存储与按需读取</td><td>请求延迟、缓存管理与传输成本</td></tr></tbody></table></div>
+        <p><strong>条带化</strong>让不同数据块分布在多个存储目标上；<strong>复制</strong>用更多空间换本地读取；<strong>缓存</strong>利用重用减少重复传输。数据不重用、工作集远大于缓存时，不能预设缓存一定有用。</p>
+        <h3>压缩有效的条件：省下的 I/O 要比解压更贵</h3>
+        <div class="equation"><span>教学补充 · 串行情形</span><strong>原始读取 D / B　vs.　压缩读取 D / (rB) + 解压 D / U</strong><small>D：原始字节量；B：存储带宽；r：压缩比；U：按解压后字节计的解码吞吐。</small></div>
+        <p>假设 1 GB 数据、1 GB/s 存储、4 倍压缩。若解压速度是 2 GB/s，总耗时约 0.25 + 0.5 = 0.75 秒，比直接读取的 1 秒快；若解压只有 0.5 GB/s，就要 2.25 秒，反而更慢。<strong>这是教学算例，未考虑重叠。</strong>流水化后要比较各阶段的最大耗时。</p>
+        <p>GPU 解码或专用解压能力也要匹配具体硬件、格式和库版本。卸载解码可能释放 CPU，也可能抢占训练所需的 GPU 资源，最终仍看训练步时。</p>
+      </section>
+
+      <section id="monitor" class="section-block" data-title="监控与定位 I/O">
+        <div class="section-source">06 <span>原书 §5.7 · pp. 130–131</span></div>
+        <h2>别只盯着 GPU 利用率</h2>
+        <p>低利用率是线索，不是病因。把存储、CPU、H2D 和 GPU 放到同一时间范围里看，才能知道是谁在等谁。</p>
+        <div class="table-wrap"><table><thead><tr><th>看哪一层</th><th>工具 / 证据</th><th>要回答的问题</th></tr></thead><tbody><tr><td>磁盘与文件系统</td><td>iostat、iotop、nvme-cli、存储看板</td><td>带宽、队列、延迟、元数据是否饱和？</td></tr><tr><td>CPU / 加载器</td><td>CPU profile、next() 主机耗时</td><td>是在读取、解码，还是等待预取队列？</td></tr><tr><td>传输与 GPU</td><td>Nsight Systems、CUDA events</td><td>Copy 与计算是否重叠？空隙出现在哪？</td></tr><tr><td>集群与通信</td><td>NIC 指标、NCCL / 系统时间轴</td><td>数据读取和集合通信是否争用链路？</td></tr></tbody></table></div>
+        <div class="callout correction"><span class="callout-icon">!</span><div><strong>next(iterator) 的耗时，不等于 GPU 空闲</strong><p>普通 DataLoader 的 <code>next()</code> 主要量到主机端取批或等队列；它不自动包含之后的 H2D。这段 CPU 时间还可能与上一批 GPU 工作并行。真实 GPU 空闲必须对照设备时间轴。这里修正了书稿 p.131 的表述。</p></div></div>
+        <p class="measure-note"><strong>计时提示：</strong>CUDA 操作通常异步提交。Python 调用很快返回，不代表设备已经完成。测整段训练可在边界同步；测设备传输用 CUDA events。不要为了计时在每一步都同步，破坏待测的重叠。</p>
+      </section>
+
+      <section id="pipeline" class="section-block" data-title="数据加载与流水线重叠">
+        <div class="section-source">07 <span>原书 §5.8–§5.11 · pp. 131–134</span></div>
+        <h2>这一批在计算，下一批就该准备了</h2>
+        <p>§5.8–5.9 先解决供给：把能离线做的变换提前做，用高效底层库或按批处理减少 Python 开销，再测多进程 workers。I/O 线程与执行 Python CPU 密集代码的线程不同；不能用一句“GIL”解释所有并发结果。</p>
+        <p>§5.10 再解决等待：读取、预处理、传输与计算分属不同资源时，不同批次可以像流水线一样同时前进。<strong>重叠隐藏等待，但不会凭空增加最慢阶段的处理能力。</strong></p>
+        <div class="interactive-panel pipeline-panel">
+          <div class="panel-heading"><div><span class="interactive-tag">交互实验室</span><h3>把四个阶段放到同一条时间线上</h3></div><span class="model-label">理想模型 · 5 批</span></div>
+          <div class="stage-controls"><label for="time-read"><span><i class="legend-dot read"></i>读取 <output id="read-value">12</output> ms</span><input id="time-read" type="range" min="2" max="60" value="12"></label><label for="time-decode"><span><i class="legend-dot decode"></i>预处理 <output id="decode-value">8</output> ms</span><input id="time-decode" type="range" min="2" max="60" value="8"></label><label for="time-transfer"><span><i class="legend-dot transfer"></i>H2D <output id="transfer-value">5</output> ms</span><input id="time-transfer" type="range" min="2" max="60" value="5"></label><label for="time-compute"><span><i class="legend-dot compute"></i>计算 <output id="compute-value">25</output> ms</span><input id="time-compute" type="range" min="2" max="60" value="25"></label></div>
+          <div class="timeline-switch"><span>同色为同一阶段，数字为批次</span><div class="segmented" role="group" aria-label="选择调度方式"><button data-schedule="serial" aria-pressed="false">串行</button><button class="selected" data-schedule="overlap" aria-pressed="true">流水线</button></div></div>
+          <div class="timeline-container"><svg id="timeline" role="img" aria-labelledby="timeline-title timeline-description" viewBox="0 0 720 202"><title id="timeline-title">五批数据的流水线时间轴</title><desc id="timeline-description">调整阶段耗时，比较串行与重叠调度。</desc></svg></div>
+          <div class="pipeline-stats" aria-live="polite"><div><small>串行 / 每批</small><strong id="serial-time">50 ms</strong></div><div><small>理想稳态 / 批次间隔</small><strong id="steady-time">25 ms</strong></div><div><small>五批总耗时 · 含启动排空</small><strong id="total-time">150 ms</strong></div></div>
+          <p class="bottleneck-note" id="bottleneck-note">当前瓶颈是计算。把预处理从 8 ms 降到 4 ms，也不会缩短 25 ms 的理想稳态间隔。</p>
+          <p class="panel-footnote">假设阶段资源独立、队列充足，稳态间隔 ≈ max(各阶段耗时)。K 批总时长 ≈ 各阶段耗时之和 + (K−1) × 最长阶段耗时。真实系统还会有资源争用和同步开销。</p>
+        </div>
+        <h3>先建立一个正确、易测的 DataLoader 基线</h3>
+        <p>下面是独立可运行的 CUDA 教学示例，只演示加载配置和传输。每个样本为 <code>(C, H, W)</code>，DataLoader 加上批维度后才是 <code>(B, C, H, W)</code>。它不代表真实磁盘性能，也不承诺跨批 H2D 与计算重叠。</p>
+        <div class="code-block"><div class="code-heading"><span>Python · 需要 PyTorch 与可用 CUDA GPU</span><button class="copy-button" data-copy="loader-code" aria-label="复制 DataLoader 示例"><svg class="icon small"><use href="#i-copy"/></svg>复制</button></div><pre><code id="loader-code">import torch
+from torch.utils.data import Dataset, DataLoader
+
+class Samples(Dataset):
+    def __len__(self):
+        return 256
+
+    def __getitem__(self, index):
+        # 单样本不含 batch 维；真实任务在这里读取、解码
+        return torch.ones(3, 224, 224, dtype=torch.float32)
+
+def main():
+    if not torch.cuda.is_available():
+        raise RuntimeError("此示例需要 CUDA GPU")
+    workers = 4
+    options = dict(batch_size=32, num_workers=workers,
+                   pin_memory=True)
+    if workers &gt; 0:
+        options.update(persistent_workers=True, prefetch_factor=2)
+    loader = DataLoader(Samples(), **options)
+    model = torch.nn.Sequential(
+        torch.nn.AdaptiveAvgPool2d(1), torch.nn.Flatten(),
+        torch.nn.Linear(3, 1)
+    ).cuda()
+    model.eval()
+    with torch.no_grad():
+        for host_batch in loader:
+            batch = host_batch.to("cuda", non_blocking=True)
+            output = model(batch)
+    torch.cuda.synchronize()  # 仅在示例结束时等待设备完成
+
+if __name__ == "__main__":  # Windows 多进程需要入口保护
+    main()</code></pre></div>
+        <div class="table-wrap"><table><thead><tr><th>开关</th><th>实际作用</th><th>不要误解为</th></tr></thead><tbody><tr><td><code>num_workers</code></td><td>并行读取 / 预处理</td><td>越多越快</td></tr><tr><td><code>pin_memory</code></td><td>准备锁页主机内存，支持高效 DMA</td><td>自动实现计算重叠</td></tr><tr><td><code>non_blocking</code></td><td>允许传输的主机调用不等待设备完成</td><td>传输已完成，或一定与计算并行</td></tr><tr><td><code>prefetch_factor</code></td><td>每个 worker 预取的批数</td><td>整个作业只有这么多批</td></tr><tr><td><code>persistent_workers</code></td><td>跨 epoch 保留 worker 进程</td><td>零内存开销</td></tr></tbody></table></div>
+        <details class="expandable"><summary>进阶：真正的 H2D / 计算重叠还缺什么？</summary><div><p>需要支持并发的硬件、锁页源内存、独立传输流，以及正确的批次预取、事件或流等待。计算读数据前要等待对应传输完成；跨流张量还要用 <code>record_stream</code> 或显式同步处理生命周期。简单地打开 <code>non_blocking=True</code>，或者新建一条流，都不是充分条件。</p><p>先在 Nsight Systems 里确认 Copy 与 kernel 的时间确实重叠，再评价收益。参见 <a href="https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html" target="_blank" rel="noopener noreferrer">PyTorch 锁页与异步传输教程</a>及 <a href="https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams" target="_blank" rel="noopener noreferrer">CUDA 流语义</a>。</p></div></details>
+        <h3>§5.11：扩卡时，worker 也会“相乘”</h3>
+        <p>8 个 rank 各开 8 个 worker，就是约 64 个加载进程。还未计入解码库内部线程。CPU、内存、磁盘或网络先饱和时，再加 worker 会更慢。</p>
+        <div class="callout"><span class="callout-icon">≈</span><div><strong>预取也要做内存预算</strong><p>粗估在途张量容量为 W × P × 每批字节数。8 workers × 4 预取 × 32 样本 × 3×224×224 × 4 字节，约 588 MiB。还要加上当前批、中间对象和副本；这不是精确的锁页内存值。参数约束见 <a href="https://docs.pytorch.org/docs/stable/data.html" target="_blank" rel="noopener noreferrer">DataLoader 文档</a>。</p></div></div>
+      </section>
+
+      <section id="tools" class="section-block" data-title="DALI 与 NeMo Curator">
+        <div class="section-source">08 <span>原书 §5.12–§5.13 · pp. 134–136</span></div>
+        <h2>把准备数据的工作，放在合适的阶段</h2>
+        <div class="tool-row"><span class="tool-badge">DALI</span><div><h3>在线：解码、变换与增广</h3><p>图像、视频的解码和变换可能成为 CPU 瓶颈。DALI 用 CPU / GPU 算子组织流水线，适合评估多模态输入处理。留意 CPU↔GPU 往返，也要测它与模型计算争抢 GPU 资源的影响。</p></div></div>
+        <div class="tool-row"><span class="tool-badge">CURATOR</span><div><h3>离线：清洗、过滤与去重</h3><p>NeMo Curator 的关注点是训练前的数据整理。能一次性完成的清洗和去重，不要在每轮训练中重复。输出格式还需与下游训练读取器衔接，不能把“清洗完成”直接等同“训练输入已优化”。</p></div></div>
+        <p class="measure-note"><strong>怎么验证：</strong>比较完整训练吞吐、准备数据的总成本及资源占用。隔离跑得很快的预处理器，接入训练后可能因资源竞争失去收益。</p>
+      </section>
+
+      <section id="profiling" class="section-block" data-title="持续剖析与瓶颈诊断">
+        <div class="section-source">09 <span>原书 §5.14–§5.15 · pp. 136–138</span></div>
+        <h2>先提出假设，再用实验排除</h2>
+        <ol class="workflow-list"><li><span>01</span><div><strong>建立基线</strong><p>记录模型、批大小、数据格式、硬件、版本与端到端 steps/s，区分冷启动和稳态。</p></div></li><li><span>02</span><div><strong>找到时间花在哪里</strong><p>对照读取、CPU 处理、H2D、计算和 NCCL 时间线；关注等待发生的位置。</p></div></li><li><span>03</span><div><strong>一次验证一个假设</strong><p>先改一个主要变量，如分片、worker 数或缓存。固定其他条件并重复采样。</p></div></li><li><span>04</span><div><strong>复测并留下记录</strong><p>比较步时、吞吐、资源和数据正确性。升级软件或扩卡后，重跑同一组实验。</p></div></li></ol>
+        <h3>通信受限，还是计算受限？</h3>
+        <p>固定模型参数量时，常规数据并行梯度 all-reduce 的字节量通常不随批大小变化。调整批大小可改变计算量，辅助观察计算与通信的关系。但它也会改变 kernel 效率、梯度就绪节奏和通信重叠，<strong>单看平均网卡 GB/s 的涨跌，不能确诊瓶颈</strong>。</p>
+        <p>要同时看：计算 kernel 是否连续、NCCL 是否暴露在关键路径、GPU 空隙出现在哪里，以及输入流水线是否断供。GPU 很忙但步时很长，还可能是访存效率或低效计算 kernel。</p>
+        <div class="callout correction"><span class="callout-icon">÷</span><div><strong>等待从 30% 降到 5%，训练快了多少？</strong><p>固定有效计算时间 C，原步时为 C/0.70，新步时为 C/0.95。吞吐加速 = 0.95/0.70 ≈ <strong>1.36 倍</strong>。等待占比缩小了 6 倍，不等于训练快了 6 倍；即使消除全部原始等待，加速上限也约 1.43 倍。这里修正书稿 p.131 的推导。</p></div></div>
+      </section>
+
+      <section id="takeaways" class="section-block" data-title="核心要点">
+        <div class="section-kicker">WHAT TO REMEMBER</div>
+        <div class="section-source">复习 <span>原书 §5.16–§5.17 · p.139</span></div>
+        <h2>把五件事连起来</h2>
+        <div class="table-wrap"><table><thead><tr><th>看到的现象</th><th>优先验证</th><th>可能的下一步</th></tr></thead><tbody><tr><td>扩卡后每卡吞吐下降</td><td>总带宽、每 rank worker、共享资源</td><td>扩输入能力、分片或本地暂存</td></tr><tr><td>带宽不高但请求很多</td><td>小读、元数据、请求延迟</td><td>合并分片、批量读取</td></tr><tr><td>CPU 忙，GPU 等</td><td>解码与变换的占比</td><td>向量化、离线预处理、评估 DALI</td></tr><tr><td>H2D 暴露在关键路径</td><td>锁页、拓扑、流依赖</td><td>优化传输与跨批重叠</td></tr><tr><td>存储微基准变快，训练没变</td><td>瓶颈是否已经转移</td><td>回到端到端时间轴</td></tr></tbody></table></div>
+        <h3>下一次训练前，做这三个实验</h3>
+        <div class="practice-checklist"><label><input type="checkbox" data-check="baseline"><span>保存一个基线：稳态 steps/s、步时分布、CPU / GPU / I/O 指标。</span></label><label><input type="checkbox" data-check="workers"><span>固定其他条件，扫描 0、2、4、8 个 worker，记录吞吐与内存。</span></label><label><input type="checkbox" data-check="trace"><span>抓一段系统时间线，指出至少一处等待，并提出可检验的原因。</span></label><p id="checklist-status" aria-live="polite">0 / 3 个实验已完成 · 仅保存在此浏览器</p></div>
+      </section>
+
+      <section id="quiz" class="section-block" data-title="六道题，检查理解">
+        <div class="section-kicker">CHECK YOUR UNDERSTANDING</div>
+        <h2>六道题，检查理解</h2><p>选完提交，立即查看解析。题目为本站原创教学练习。</p>
+        <form id="quiz-form"><fieldset class="quiz-question" data-answer="b"><legend><span>01</span>8 卡，每卡 200 MB/s，留 50% 余量，存储目标是多少？</legend><label><input type="radio" name="q1" value="a">1.6 GB/s</label><label><input type="radio" name="q1" value="b">2.4 GB/s</label><label><input type="radio" name="q1" value="c">3.2 GB/s</label><p class="quiz-feedback" hidden>2.4 GB/s。8 × 200 × 1.5 ÷ 1,000 = 2.4。</p></fieldset>
+          <fieldset class="quiz-question" data-answer="c"><legend><span>02</span>non_blocking=True 能保证什么？</legend><label><input type="radio" name="q2" value="a">设备传输已完成</label><label><input type="radio" name="q2" value="b">H2D 一定与计算重叠</label><label><input type="radio" name="q2" value="c">允许主机调用不等待传输完成；仍须验证重叠条件</label><p class="quiz-feedback" hidden>选第三项。主机异步、设备完成和跨流并发是不同概念。</p></fieldset>
+          <fieldset class="quiz-question" data-answer="a"><legend><span>03</span>GDS 路径里，CPU 还参与吗？</legend><label><input type="radio" name="q3" value="a">参与，负责控制与 I/O 编排</label><label><input type="radio" name="q3" value="b">完全不参与</label><p class="quiz-feedback" hidden>仍然参与。GDS 的重点是减少主机内存的数据中转。</p></fieldset>
+          <fieldset class="quiz-question" data-answer="b"><legend><span>04</span>worker 从 4 增到 16 却变慢，先做什么？</legend><label><input type="radio" name="q4" value="a">继续增加到 32</label><label><input type="radio" name="q4" value="b">查 CPU、内存、I/O 竞争，并比较端到端步时</label><p class="quiz-feedback" hidden>先查资源争用。并行度有收益递减，也会乘上 rank 数。</p></fieldset>
+          <fieldset class="quiz-question" data-answer="a"><legend><span>05</span>固定计算耗时，等待比例 30% → 5%，吞吐约提升到原来的多少？</legend><label><input type="radio" name="q5" value="a">1.36 倍</label><label><input type="radio" name="q5" value="b">6 倍</label><label><input type="radio" name="q5" value="c">1.05 倍</label><p class="quiz-feedback" hidden>0.95 / 0.70 ≈ 1.36 倍。不要用等待比例的比值当训练加速比。</p></fieldset>
+          <fieldset class="quiz-question" data-answer="c"><legend><span>06</span>读取 12、预处理 8、H2D 5、计算 25 ms，理想稳态批次间隔？</legend><label><input type="radio" name="q6" value="a">50 ms</label><label><input type="radio" name="q6" value="b">5 ms</label><label><input type="radio" name="q6" value="c">25 ms</label><p class="quiz-feedback" hidden>25 ms，即最长阶段耗时。这是资源独立、队列充足的理想模型。</p></fieldset>
+          <div class="quiz-actions"><button class="primary-button" type="submit">检查答案 <svg class="icon small"><use href="#i-arrow"/></svg></button><button class="text-button" type="reset">重新作答</button><output id="quiz-score" aria-live="polite"></output></div>
+        </form>
+      </section>
+
+      <section id="faq" class="section-block" data-title="FAQ 与术语">
+        <div class="section-kicker">A FEW GOOD QUESTIONS</div><h2>FAQ：容易混淆的地方</h2>
+        <details class="expandable"><summary>为什么 GPU 利用率低，不能直接归因于存储？</summary><div><p>CPU 预处理、H2D、同步、NCCL 通信甚至频繁的小 kernel，都可能造成 GPU 空隙。利用率是汇总指标，定位需要时间轴和分层测量。</p></div></details>
+        <details class="expandable"><summary>数据集装进内存，就一定没有传输瓶颈了吗？</summary><div><p>内存缓存可以消除部分磁盘读取，但 CPU 内存与 GPU HBM 不是同一性能层级。即便统一地址空间允许 GPU 访问主机内存，也仍有链路、延迟和带宽成本。H2D 与解码流量需要单独评估。</p></div></details>
+        <details class="expandable"><summary>什么时候 GDS 可能没有明显收益？</summary><div><p>如果关键瓶颈在解码或 GPU 计算，减少数据中转未必缩短步时；文件系统不支持、兼容路径或不合适的 I/O 大小，也会改变结果。先验证实际路径，再同时比较 CPU 占用和端到端吞吐。</p></div></details>
+        <details class="expandable"><summary>为什么分片后还需要检查数据正确性？</summary><div><p>吞吐提高不能以漏样本、重复样本或训练随机性变化为代价。要核对各 rank / worker 的分配、epoch 边界、分片覆盖和打乱策略。</p></div></details>
+        <details class="expandable"><summary>术语速查：H2D、IOPS、DMA、RDMA、GDS</summary><div><dl class="glossary"><dt>H2D</dt><dd>Host to Device，主机到 GPU 设备的数据传输。</dd><dt>IOPS</dt><dd>每秒完成的 I/O 请求数；高 IOPS 不自动等于高字节吞吐。</dd><dt>DMA</dt><dd>设备直接内存访问机制，CPU 仍可负责设置与控制。</dd><dt>RDMA</dt><dd>远程直接内存访问，通常通过支持的网络适配器与内存注册实现。</dd><dt>GDS</dt><dd>GPUDirect Storage，在受支持存储路径中减少主机中转。</dd><dt>shard / rank</dt><dd>shard 是数据分片；rank 标识分布式训练中的进程。</dd></dl></div></details>
+      </section>
+
+      <section id="references" class="section-block references" data-title="阅读来源与勘误">
+        <div class="section-kicker">SOURCES & READING NOTES</div><h2>回到来源，继续深读</h2>
+        <p>本页依据《AI 系统性能工程》中文伴读译稿第五章编写原创讲解，作者 Chris Fregly。书内页码 121–139，对应 PDF 第 130–148 页；小节编号用于阅读定位。交互、流程图、算例与自测由本站重新设计，不是原书实测结果。</p>
+        <p>页面结构参考 <a href="https://se7en.mintlify.app/books/ai-systems-performance-engineering/chapters/ch19" target="_blank" rel="noopener noreferrer">Se7en 的章节笔记</a>。以下官方资料用于核对 API 条件和书稿中的关键数字。</p>
+        <ol class="reference-list"><li><a href="https://docs.nvidia.com/gpudirect-storage/overview-guide/index.html" target="_blank" rel="noopener noreferrer">NVIDIA · GPUDirect Storage Overview</a><span>支持的数据路径与系统前提</span></li><li><a href="https://docs.nvidia.com/gpudirect-storage/configuration-guide/benchmarking-gpudirect-storage.html" target="_blank" rel="noopener noreferrer">NVIDIA · Benchmarking GDS</a><span>gdsio 传输模式与基准方法</span></li><li><a href="https://github.com/deepseek-ai/3FS#performance" target="_blank" rel="noopener noreferrer">DeepSeek · 3FS Performance</a><span>6.6 TiB/s 测试的硬件上下文</span></li><li><a href="https://docs.pytorch.org/docs/stable/data.html" target="_blank" rel="noopener noreferrer">PyTorch · Data Loading</a><span>worker、预取与锁页内存参数</span></li><li><a href="https://docs.pytorch.org/tutorials/intermediate/pinmem_nonblock.html" target="_blank" rel="noopener noreferrer">PyTorch · pin_memory 与 non_blocking</a><span>主机异步和设备重叠的区别</span></li><li><a href="https://docs.pytorch.org/docs/stable/notes/cuda.html#cuda-streams" target="_blank" rel="noopener noreferrer">PyTorch · CUDA Streams</a><span>跨流依赖与张量生命周期</span></li></ol>
+        <details class="expandable"><summary>本页做了哪些阅读校正？</summary><div><ul class="prose-list"><li>p.128：3FS 配置与单位，按官方报告标明 180 节点与 TiB/s。</li><li>p.131：区分 DataLoader 的主机取批时间与真实 GPU 等待。</li><li>p.131：等待占比 30% → 5% 的加速改为约 1.36 倍。</li><li>p.133：重写 DataLoader 代码，修正重复 batch 维与未定义变量，并说明异步重叠的边界。</li><li>p.138：批大小与平均网卡吞吐只作为诊断线索，必须结合时间轴。</li></ul><p>官方网页核对日期：2026-11-18。性能结论始终需要在自己的版本、硬件和负载上重测。</p></div></details>
+      </section>
+      <div class="end-card"><span class="end-icon"><svg class="icon"><use href="#i-check"/></svg></span><div><small>YOU'VE REACHED THE END</small><h3>更快的训练，从更少的等待开始。</h3><p>先画时间线，再改一个变量。</p></div><a href="#top" class="icon-button" aria-label="返回顶部">↑</a></div>
+      <footer class="article-footer"><span>panxy1019 · AI Systems Notes</span><a href="https://github.com/panxy1019/ai-systems-notes/blob/main/dist/index.html" target="_blank" rel="noopener noreferrer">在 GitHub 编辑本页 ↗</a></footer>
+    </main>
+
+    <aside class="toc" aria-label="本页目录"><div class="toc-inner"><div class="toc-heading"><span>≡</span> 本页目录</div><nav><a href="#overview" class="active">本章概要</a><a href="#storage">存储带宽与局部性</a><a href="#access">顺序读与分片</a><a href="#gds">GPUDirect Storage</a><a href="#threefs">DeepSeek 3FS</a><a href="#architecture">存储架构与压缩</a><a href="#monitor">监控 I/O</a><a href="#pipeline">数据加载与重叠</a><a href="#tools">DALI / Curator</a><a href="#profiling">剖析与诊断</a><a href="#takeaways">核心要点</a><a href="#quiz">理解自测</a><a href="#faq">FAQ</a></nav><a class="toc-source" href="#references"><svg class="icon small"><use href="#i-book"/></svg>来源与阅读校正</a><div class="toc-tip"><span>阅读提示</span><p>拖动交互时间线里的滑块，观察瓶颈怎样移动。</p><a href="#pipeline">进入实验室 →</a></div></div></aside>
+  </div>
+
+  <dialog id="search-dialog" aria-labelledby="search-title"><div class="search-dialog-header"><svg class="icon"><use href="#i-search"/></svg><label class="sr-only" id="search-title" for="search-input">搜索本章内容</label><input id="search-input" type="search" placeholder="搜索 GDS、worker、等待…" autocomplete="off"><button class="icon-button" id="search-close" aria-label="关闭搜索">✕</button></div><div class="search-results" id="search-results" aria-live="polite"></div><div class="search-dialog-footer">搜索标题与正文 <span>Esc 关闭</span></div></dialog>
+  <div class="toast" id="toast" role="status" hidden></div>
+  <noscript><div class="noscript-note">正文可以直接阅读；交互演示、搜索与自测需要启用 JavaScript。</div></noscript>
+</body>
+</html>

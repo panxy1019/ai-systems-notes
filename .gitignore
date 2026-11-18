@@ -1,0 +1,7 @@
+research/
+node_modules/
+.DS_Store
+.deploy/
+*.tar.gz
+*.log
+

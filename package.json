@@ -1,0 +1,11 @@
+{
+  "name": "ai-systems-notes",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "panxy1019 的 AI 系统性能工程第五章中文伴读",
+  "scripts": {
+    "start": "node scripts/serve.mjs",
+    "check": "node scripts/check.mjs"
+  }
+}
